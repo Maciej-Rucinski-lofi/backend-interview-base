@@ -27,4 +27,5 @@ import "context"
 type ServiceLocator interface {
 	Author(ctx context.Context) AuthorService
 	Book(ctx context.Context) BookService
+	Publisher(ctx context.Context) PublisherService
 }

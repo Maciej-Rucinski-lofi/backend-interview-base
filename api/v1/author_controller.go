@@ -30,6 +30,7 @@ func (h *AuthorController) Routes(g *echo.Group) {
 	g.POST("/authors", h.create)
 	g.PATCH("/authors/:id", h.update)
 	g.DELETE("/authors/:id", h.delete)
+	g.POST("/authors/:id/transfer-books", h.transferBooks)
 }
 
 func (h *AuthorController) list(c echo.Context) error {
@@ -112,6 +113,24 @@ func (h *AuthorController) delete(c echo.Context) error {
 		return models.NewHTTPError(http.StatusBadRequest, "invalid query: "+err.Error())
 	}
 	if err := h.svc.Author(c.Request().Context()).Delete(c.Request().Context(), args); err != nil {
+		return err
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
+func (h *AuthorController) transferBooks(c echo.Context) error {
+	fromID, err := pathID(c)
+	if err != nil {
+		return err
+	}
+	var body struct {
+		TargetAuthorID int64 `json:"targetAuthorId"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return models.NewHTTPError(http.StatusBadRequest, "invalid body: "+err.Error())
+	}
+	ctx := c.Request().Context()
+	if err := h.svc.Author(ctx).TransferBooks(ctx, fromID, body.TargetAuthorID); err != nil {
 		return err
 	}
 	return c.NoContent(http.StatusNoContent)

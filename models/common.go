@@ -75,7 +75,8 @@ type Pagination struct {
 // resource type lives under its own key. We only put what the caller asked
 // for via `?include=` here.
 type Included struct {
-	Authors []*Author `json:"authors,omitempty"`
+	Authors    []*Author    `json:"authors,omitempty"`
+	Publishers []*Publisher `json:"publishers,omitempty"`
 }
 
 // Includer parses the comma-separated `include` query value into a small set.
@@ -88,7 +89,8 @@ type Includer struct {
 // Include constants — every model exports the strings that callers can pass
 // in `?include=`.
 const (
-	IncludeAuthors = "authors"
+	IncludeAuthors    = "authors"
+	IncludePublishers = "publishers"
 )
 
 // NewIncluder is sugar for service code that wants to ask for an include

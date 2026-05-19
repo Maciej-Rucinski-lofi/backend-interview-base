@@ -23,6 +23,7 @@ func (h *BookController) Routes(g *echo.Group) {
 	g.GET("/books/:id", h.get)
 	g.POST("/books", h.create)
 	g.PATCH("/books/:id", h.update)
+	g.DELETE("/books", h.bulkDelete)
 	g.DELETE("/books/:id", h.delete)
 }
 
@@ -97,6 +98,21 @@ func (h *BookController) update(c echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusOK, resp)
+}
+
+func (h *BookController) bulkDelete(c echo.Context) error {
+	req := &models.BulkDeleteBooksBody{}
+	if err := c.Bind(req); err != nil {
+		return models.NewHTTPError(http.StatusBadRequest, "invalid body: "+err.Error())
+	}
+	args := &models.BookArgs{}
+	args.Filter = req.Filter
+	ctx := c.Request().Context()
+	n, err := h.svc.Book(ctx).BulkDelete(ctx, args)
+	if err != nil {
+		return err
+	}
+	return c.JSON(http.StatusOK, map[string]int64{"deleted": n})
 }
 
 func (h *BookController) delete(c echo.Context) error {

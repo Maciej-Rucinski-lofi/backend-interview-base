@@ -29,4 +29,9 @@ type AuthorService interface {
 	// Delete soft-deletes the author by default (state="deleted"); pass
 	// args.HardDelete=true to remove the row.
 	Delete(ctx context.Context, args *models.AuthorArgs) error
+
+	// TransferBooks atomically moves every active book from fromAuthorID to
+	// targetAuthorID. Returns 404 if either author does not exist, 400 if
+	// targetAuthorID is missing.
+	TransferBooks(ctx context.Context, fromAuthorID int64, targetAuthorID int64) error
 }

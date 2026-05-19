@@ -30,7 +30,7 @@ func TestBookService_Create_RejectsUnknownAuthor(t *testing.T) {
 			},
 		},
 	}
-	svc := services.NewBookService(books, authors, loc)
+	svc := services.NewBookService(books, authors, nil, loc)
 
 	body := &models.BookBody{Book: &models.Book{
 		Title:     "Some Title",
@@ -68,7 +68,7 @@ func TestBookService_Create_StampsMeta(t *testing.T) {
 			},
 		},
 	}
-	svc := services.NewBookService(books, authors, loc)
+	svc := services.NewBookService(books, authors, nil, loc)
 
 	body := &models.BookBody{Book: &models.Book{
 		Title:     "Patterns",
@@ -99,7 +99,7 @@ func TestBookService_Get_NotFound(t *testing.T) {
 			return nil, 0, nil
 		},
 	}
-	svc := services.NewBookService(books, &mockrepo.AuthorRepo{}, &mocksvc.Locator{})
+	svc := services.NewBookService(books, &mockrepo.AuthorRepo{}, nil, &mocksvc.Locator{})
 
 	_, err := svc.Get(ctx, &models.BookArgs{RequestCommons: models.RequestCommons{ID: 7}})
 	he, _ := models.AsHTTPError(err)

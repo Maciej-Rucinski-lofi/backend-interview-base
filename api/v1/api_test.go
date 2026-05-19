@@ -31,10 +31,12 @@ func newTestServer(t *testing.T) *echo.Echo {
 
 	authorRepo := sqlite.NewAuthorRepository(db)
 	bookRepo := sqlite.NewBookRepository(db)
+	publisherRepo := sqlite.NewPublisherRepository(db)
 
 	loc := services.NewLocator()
 	loc.SetAuthor(services.NewAuthorService(authorRepo, loc))
-	loc.SetBook(services.NewBookService(bookRepo, authorRepo, loc))
+	loc.SetBook(services.NewBookService(bookRepo, authorRepo, publisherRepo, loc))
+	loc.SetPublisher(services.NewPublisherService(publisherRepo, loc))
 
 	e := echo.New()
 	e.HTTPErrorHandler = apiv1.ErrorHandler
@@ -151,6 +153,189 @@ func TestEndToEnd(t *testing.T) {
 func jsonInt(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+// TestPublisherCRUD exercises the full CRUD cycle for /v1/publishers.
+func TestPublisherCRUD(t *testing.T) {
+	e := newTestServer(t)
+
+	// Create
+	rec := do(t, e, http.MethodPost, "/v1/publishers",
+		`{"publisher":{"name":"O'Reilly","country":"US"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create publisher: %d %s", rec.Code, rec.Body.String())
+	}
+	var pb struct {
+		Publisher struct {
+			ID      int64  `json:"id"`
+			Name    string `json:"name"`
+			Country string `json:"country"`
+		} `json:"publisher"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pb); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if pb.Publisher.ID == 0 {
+		t.Fatal("expected non-zero publisher id")
+	}
+	if pb.Publisher.Name != "O'Reilly" || pb.Publisher.Country != "US" {
+		t.Fatalf("unexpected publisher: %+v", pb.Publisher)
+	}
+
+	// Get
+	rec = do(t, e, http.MethodGet, "/v1/publishers/"+jsonInt(pb.Publisher.ID), "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get publisher: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Update
+	rec = do(t, e, http.MethodPatch, "/v1/publishers/"+jsonInt(pb.Publisher.ID),
+		`{"publisher":{"name":"Penguin","country":"UK"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update publisher: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Delete
+	rec = do(t, e, http.MethodDelete, "/v1/publishers/"+jsonInt(pb.Publisher.ID), "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete publisher: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBookWithPublisher verifies that a book can reference a publisher and
+// that the reference is preserved on create/get.
+func TestBookWithPublisher(t *testing.T) {
+	e := newTestServer(t)
+
+	// Create a publisher first.
+	rec := do(t, e, http.MethodPost, "/v1/publishers", `{"publisher":{"name":"MIT Press","country":"US"}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create publisher: %d %s", rec.Code, rec.Body.String())
+	}
+	var pb struct {
+		Publisher struct{ ID int64 `json:"id"` } `json:"publisher"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &pb)
+
+	// Create a book referencing the publisher.
+	bookJSON := `{"book":{"title":"SICP","publisher":` + jsonInt(pb.Publisher.ID) + `}}`
+	rec = do(t, e, http.MethodPost, "/v1/books", bookJSON)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create book: %d %s", rec.Code, rec.Body.String())
+	}
+	var bb models.BookBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &bb)
+	if bb.Book.RelPublisher.GetID() != pb.Publisher.ID {
+		t.Fatalf("expected publisher.id=%d on book, got %v", pb.Publisher.ID, bb.Book.RelPublisher)
+	}
+}
+
+// TestTransferBooks verifies that POST /v1/authors/:id/transfer-books moves
+// books atomically.
+func TestTransferBooks(t *testing.T) {
+	e := newTestServer(t)
+
+	createAuthor := func(name string) int64 {
+		rec := do(t, e, http.MethodPost, "/v1/authors", `{"author":{"name":"`+name+`"}}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create author %s: %d", name, rec.Code)
+		}
+		var ab models.AuthorBody
+		_ = json.Unmarshal(rec.Body.Bytes(), &ab)
+		return ab.Author.ID
+	}
+
+	fromID := createAuthor("Ada")
+	toID := createAuthor("Grace")
+
+	// Create two books for Ada.
+	for _, title := range []string{"Book A", "Book B"} {
+		rec := do(t, e, http.MethodPost, "/v1/books",
+			`{"book":{"title":"`+title+`","author":`+jsonInt(fromID)+`}}`)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create book %s: %d %s", title, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Transfer Ada's books to Grace.
+	rec := do(t, e, http.MethodPost, "/v1/authors/"+jsonInt(fromID)+"/transfer-books",
+		`{"targetAuthorId":`+jsonInt(toID)+`}`)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("transfer-books: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Ada should now have 0 books.
+	rec = do(t, e, http.MethodGet, "/v1/books?authorId="+jsonInt(fromID), "")
+	var bs models.BooksBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &bs)
+	if bs.Pagination.Total != 0 {
+		t.Fatalf("expected 0 books for Ada after transfer, got %d", bs.Pagination.Total)
+	}
+
+	// Grace should have 2 books.
+	rec = do(t, e, http.MethodGet, "/v1/books?authorId="+jsonInt(toID), "")
+	_ = json.Unmarshal(rec.Body.Bytes(), &bs)
+	if bs.Pagination.Total != 2 {
+		t.Fatalf("expected 2 books for Grace after transfer, got %d", bs.Pagination.Total)
+	}
+}
+
+// TestBulkDeleteBooks exercises DELETE /v1/books with a JSON filter body.
+func TestBulkDeleteBooks(t *testing.T) {
+	e := newTestServer(t)
+
+	rec := do(t, e, http.MethodPost, "/v1/authors", `{"author":{"name":"Author"}}`)
+	var ab models.AuthorBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &ab)
+
+	for _, genre := range []string{"fiction", "fiction", "non-fiction"} {
+		do(t, e, http.MethodPost, "/v1/books",
+			`{"book":{"title":"T","genre":"`+genre+`","author":`+jsonInt(ab.Author.ID)+`}}`)
+	}
+
+	// Bulk-delete only the fiction books.
+	filterBody := `{"filter":[{"name":"genre","op":"$eq","val":"fiction"}]}`
+	rec = do(t, e, http.MethodDelete, "/v1/books", filterBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bulk delete: %d %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]int64
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["deleted"] != 2 {
+		t.Fatalf("expected 2 deleted, got %d", resp["deleted"])
+	}
+
+	// Only 1 book should remain.
+	rec = do(t, e, http.MethodGet, "/v1/books", "")
+	var bs models.BooksBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &bs)
+	if bs.Pagination.Total != 1 {
+		t.Fatalf("expected 1 remaining book, got %d", bs.Pagination.Total)
+	}
+}
+
+// TestFilterByAuthorName exercises the ?filter=author.name route (Task 2).
+func TestFilterByAuthorName(t *testing.T) {
+	e := newTestServer(t)
+
+	for _, name := range []string{"Ada Lovelace", "Grace Hopper"} {
+		rec := do(t, e, http.MethodPost, "/v1/authors", `{"author":{"name":"`+name+`"}}`)
+		var ab models.AuthorBody
+		_ = json.Unmarshal(rec.Body.Bytes(), &ab)
+		do(t, e, http.MethodPost, "/v1/books",
+			`{"book":{"title":"Book by `+name+`","author":`+jsonInt(ab.Author.ID)+`}}`)
+	}
+
+	q := `/v1/books?filter=` + url.QueryEscape(`[{"name":"author.name","op":"$like","val":"Ada%"}]`)
+	rec := do(t, e, http.MethodGet, q, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("filter: %d %s", rec.Code, rec.Body.String())
+	}
+	var bs models.BooksBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &bs)
+	if len(bs.Books) != 1 {
+		t.Fatalf("expected 1 book for Ada, got %d", len(bs.Books))
+	}
 }
 
 // TestFilter exercises the ?filter=...&include=... binding path end-to-end.

@@ -20,8 +20,9 @@ import (
 //  2. Construction order is hairy when services reference each other; the
 //     setter pattern (NewLocator -> SetAuthor / SetBook) avoids the cycle.
 type Locator struct {
-	author iservices.AuthorService
-	book   iservices.BookService
+	author    iservices.AuthorService
+	book      iservices.BookService
+	publisher iservices.PublisherService
 }
 
 // NewLocator returns an empty locator. Callers register concrete services
@@ -35,11 +36,17 @@ func (l *Locator) SetAuthor(s iservices.AuthorService) { l.author = s }
 // SetBook registers a BookService with the locator.
 func (l *Locator) SetBook(s iservices.BookService) { l.book = s }
 
+// SetPublisher registers a PublisherService with the locator.
+func (l *Locator) SetPublisher(s iservices.PublisherService) { l.publisher = s }
+
 // Author satisfies iservices.ServiceLocator.
 func (l *Locator) Author(_ context.Context) iservices.AuthorService { return l.author }
 
 // Book satisfies iservices.ServiceLocator.
 func (l *Locator) Book(_ context.Context) iservices.BookService { return l.book }
+
+// Publisher satisfies iservices.ServiceLocator.
+func (l *Locator) Publisher(_ context.Context) iservices.PublisherService { return l.publisher }
 
 // Compile-time check that *Locator implements the umbrella interface.
 var _ iservices.ServiceLocator = (*Locator)(nil)

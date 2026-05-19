@@ -40,10 +40,12 @@ func main() {
 
 	authorRepo := sqlite.NewAuthorRepository(db)
 	bookRepo := sqlite.NewBookRepository(db)
+	publisherRepo := sqlite.NewPublisherRepository(db)
 
 	locator := services.NewLocator()
 	locator.SetAuthor(services.NewAuthorService(authorRepo, locator))
-	locator.SetBook(services.NewBookService(bookRepo, authorRepo, locator))
+	locator.SetBook(services.NewBookService(bookRepo, authorRepo, publisherRepo, locator))
+	locator.SetPublisher(services.NewPublisherService(publisherRepo, locator))
 
 	e := echo.New()
 	e.HideBanner = true

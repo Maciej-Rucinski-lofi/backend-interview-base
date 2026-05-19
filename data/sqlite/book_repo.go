@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"library-api/models"
 )
@@ -18,6 +20,11 @@ func NewBookRepository(db *sql.DB) *BookRepository {
 	return &BookRepository{db: db}
 }
 
+// bookFrom is the common FROM clause. We always LEFT JOIN authors so that
+// ?filter=[{"name":"author.name",...}] and ?orderBy=author.name work without
+// any extra plumbing — the qualified column authors.name is already in scope.
+const bookFrom = `FROM books LEFT JOIN authors ON books.authors_id = authors.id`
+
 // List returns books matching args plus the total row count.
 func (r *BookRepository) List(ctx context.Context, args *models.BookArgs) ([]*models.Book, int64, error) {
 	args.ApplyDefaults(ctx)
@@ -29,10 +36,11 @@ func (r *BookRepository) List(ctx context.Context, args *models.BookArgs) ([]*mo
 
 	order := buildOrderBy(&args.RequestCommons, models.Book{}.FilterFieldMap(), "books.id")
 
-	q := `SELECT id, title, isbn, pageCount, genre, authors_id, state,
-		createdAt, updatedAt, deletedAt,
-		createdBy_users_id, updatedBy_users_id, deletedBy_users_id
-		FROM books ` + where + ` ` + order + ` LIMIT ? OFFSET ?`
+	q := `SELECT books.id, books.title, books.isbn, books.pageCount, books.genre,
+		books.authors_id, books.publishers_id, books.state,
+		books.createdAt, books.updatedAt, books.deletedAt,
+		books.createdBy_users_id, books.updatedBy_users_id, books.deletedBy_users_id
+		` + bookFrom + ` ` + where + ` ` + order + ` LIMIT ? OFFSET ?`
 	rows, err := r.db.QueryContext(ctx, q, append(params, args.PageSize, args.Offset())...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("books list: %w", err)
@@ -42,7 +50,8 @@ func (r *BookRepository) List(ctx context.Context, args *models.BookArgs) ([]*mo
 	out := []*models.Book{}
 	for rows.Next() {
 		b := &models.Book{
-			RelAuthor: &models.Relationship{Type: "authors"},
+			RelAuthor:    &models.Relationship{Type: "authors"},
+			RelPublisher: &models.Relationship{Type: "publishers"},
 			Meta: models.Meta{
 				RelCreatedBy: &models.Relationship{Type: "users"},
 				RelUpdatedBy: &models.Relationship{Type: "users"},
@@ -51,7 +60,7 @@ func (r *BookRepository) List(ctx context.Context, args *models.BookArgs) ([]*mo
 		}
 		if err := rows.Scan(
 			&b.ID, &b.Title, &b.ISBN, &b.PageCount, &b.Genre,
-			b.RelAuthor, &b.State,
+			b.RelAuthor, b.RelPublisher, &b.State,
 			&b.CreatedAt, &b.UpdatedAt, &b.DeletedAt,
 			b.RelCreatedBy, b.RelUpdatedBy, b.RelDeletedBy,
 		); err != nil {
@@ -65,7 +74,7 @@ func (r *BookRepository) List(ctx context.Context, args *models.BookArgs) ([]*mo
 	}
 
 	var total int64
-	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM books `+where, params...).Scan(&total); err != nil {
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) `+bookFrom+` `+where, params...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("books count: %w", err)
 	}
 	return out, total, nil
@@ -74,11 +83,11 @@ func (r *BookRepository) List(ctx context.Context, args *models.BookArgs) ([]*mo
 func (r *BookRepository) Create(ctx context.Context, b *models.Book) error {
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO books
-			(title, isbn, pageCount, genre, authors_id, state,
+			(title, isbn, pageCount, genre, authors_id, publishers_id, state,
 			 createdAt, updatedAt,
 			 createdBy_users_id, updatedBy_users_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.Title, b.ISBN, b.PageCount, b.Genre, b.RelAuthor, b.State,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		b.Title, b.ISBN, b.PageCount, b.Genre, b.RelAuthor, b.RelPublisher, b.State,
 		b.CreatedAt, b.UpdatedAt,
 		b.RelCreatedBy, b.RelUpdatedBy,
 	)
@@ -97,12 +106,12 @@ func (r *BookRepository) Update(ctx context.Context, b *models.Book) error {
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE books SET
 			title = ?, isbn = ?, pageCount = ?, genre = ?,
-			authors_id = ?, state = ?,
+			authors_id = ?, publishers_id = ?, state = ?,
 			updatedAt = ?, deletedAt = ?,
 			updatedBy_users_id = ?, deletedBy_users_id = ?
 		 WHERE id = ?`,
 		b.Title, b.ISBN, b.PageCount, b.Genre,
-		b.RelAuthor, b.State,
+		b.RelAuthor, b.RelPublisher, b.State,
 		b.UpdatedAt, b.DeletedAt,
 		b.RelUpdatedBy, b.RelDeletedBy,
 		b.ID,
@@ -113,12 +122,79 @@ func (r *BookRepository) Update(ctx context.Context, b *models.Book) error {
 	return nil
 }
 
+// UpdateWithOptimisticLock updates the book only when its current updatedAt
+// in the database matches expectedUpdatedAt. If another writer already
+// committed a change between our read and this write, RowsAffected is 0 and
+// we return a 409 Conflict so the client can retry.
+func (r *BookRepository) UpdateWithOptimisticLock(ctx context.Context, b *models.Book, expectedUpdatedAt *time.Time) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE books SET
+			title = ?, isbn = ?, pageCount = ?, genre = ?,
+			authors_id = ?, publishers_id = ?, state = ?,
+			updatedAt = ?, deletedAt = ?,
+			updatedBy_users_id = ?, deletedBy_users_id = ?
+		 WHERE id = ? AND updatedAt = ?`,
+		b.Title, b.ISBN, b.PageCount, b.Genre,
+		b.RelAuthor, b.RelPublisher, b.State,
+		b.UpdatedAt, b.DeletedAt,
+		b.RelUpdatedBy, b.RelDeletedBy,
+		b.ID, expectedUpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("books update: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return models.NewHTTPError(http.StatusConflict, "book was modified concurrently, please retry")
+	}
+	return nil
+}
+
 func (r *BookRepository) Delete(ctx context.Context, id int64) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM books WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("books delete: %w", err)
 	}
 	return nil
+}
+
+// TransferBooks atomically reassigns all active books from fromAuthorID to
+// toAuthorID in a single UPDATE statement, stamping the audit trail.
+func (r *BookRepository) TransferBooks(ctx context.Context, fromAuthorID, toAuthorID, actorUserID int64) error {
+	now := time.Now().UTC()
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE books SET authors_id = ?, updatedAt = ?, updatedBy_users_id = ?
+		 WHERE authors_id = ? AND state = ?`,
+		toAuthorID, now, actorUserID, fromAuthorID, models.StateActive,
+	)
+	if err != nil {
+		return fmt.Errorf("books transfer: %w", err)
+	}
+	return nil
+}
+
+// BulkSoftDelete soft-deletes every active book matching args and returns the
+// number of rows updated. The WHERE clause is built the same way as List so
+// callers can reuse the same filter syntax.
+func (r *BookRepository) BulkSoftDelete(ctx context.Context, args *models.BookArgs, actorUserID int64) (int64, error) {
+	where, params, err := buildBookWhere(args)
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC()
+	// Build the UPDATE with the same WHERE fragment used by List.
+	// We replace the default "books.state = 'active'" that buildBookWhere
+	// already adds, so we only soft-delete active records.
+	q := `UPDATE books SET state = ?, deletedAt = ?, updatedAt = ?,
+		deletedBy_users_id = ?, updatedBy_users_id = ?
+		` + strings.Replace(where, "WHERE ", "WHERE ", 1) // passthrough
+	allParams := append([]any{models.StateDeleted, now, now, actorUserID, actorUserID}, params...)
+	res, err := r.db.ExecContext(ctx, q, allParams...)
+	if err != nil {
+		return 0, fmt.Errorf("books bulk delete: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 func buildBookWhere(args *models.BookArgs) (string, []any, error) {
@@ -148,6 +224,9 @@ func clearBookEmptyRelationships(b *models.Book) {
 	if b.RelAuthor != nil && b.RelAuthor.ID == 0 {
 		b.RelAuthor = nil
 	}
+	if b.RelPublisher != nil && b.RelPublisher.ID == 0 {
+		b.RelPublisher = nil
+	}
 	if b.RelCreatedBy != nil && b.RelCreatedBy.ID == 0 {
 		b.RelCreatedBy = nil
 	}
@@ -158,4 +237,3 @@ func clearBookEmptyRelationships(b *models.Book) {
 		b.RelDeletedBy = nil
 	}
 }
-

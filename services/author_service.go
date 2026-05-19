@@ -124,6 +124,23 @@ func (s *AuthorService) Delete(ctx context.Context, args *models.AuthorArgs) err
 	return s.repo.Update(ctx, body.Author)
 }
 
+// TransferBooks atomically moves all active books from fromAuthorID to
+// targetAuthorID. Both authors must exist. Delegates the atomic SQL update
+// to BookService.TransferBooks so that the single UPDATE transaction lives
+// in the data layer.
+func (s *AuthorService) TransferBooks(ctx context.Context, fromAuthorID int64, targetAuthorID int64) error {
+	if targetAuthorID == 0 {
+		return models.NewHTTPError(http.StatusBadRequest, "targetAuthorId is required")
+	}
+	if _, err := s.Get(ctx, &models.AuthorArgs{RequestCommons: models.RequestCommons{ID: fromAuthorID}}); err != nil {
+		return err
+	}
+	if _, err := s.Get(ctx, &models.AuthorArgs{RequestCommons: models.RequestCommons{ID: targetAuthorID}}); err != nil {
+		return models.NewHTTPError(http.StatusBadRequest, "target author does not exist")
+	}
+	return s.svc.Book(ctx).TransferBooks(ctx, fromAuthorID, targetAuthorID)
+}
+
 // validate is intentionally tiny. The point isn't validation rigour; it is
 // to show candidates *where* validation lives — at the start of Create /
 // Update, never in the controller and never in the repo.

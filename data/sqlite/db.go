@@ -55,29 +55,51 @@ func migrate(db *sql.DB) error {
 			deletedBy_users_id INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_authors_state ON authors(state)`,
-		`CREATE TABLE IF NOT EXISTS books (
+		`CREATE TABLE IF NOT EXISTS publishers (
 			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
-			title              TEXT    NOT NULL,
-			isbn               TEXT    NOT NULL DEFAULT '',
-			pageCount          INTEGER NOT NULL DEFAULT 0,
-			genre              TEXT    NOT NULL DEFAULT '',
-			authors_id         INTEGER,
+			name               TEXT    NOT NULL,
+			country            TEXT    NOT NULL DEFAULT '',
 			state              TEXT    NOT NULL DEFAULT 'active',
 			createdAt          TIMESTAMP,
 			updatedAt          TIMESTAMP,
 			deletedAt          TIMESTAMP,
 			createdBy_users_id INTEGER,
 			updatedBy_users_id INTEGER,
-			deletedBy_users_id INTEGER,
-			FOREIGN KEY (authors_id) REFERENCES authors(id)
+			deletedBy_users_id INTEGER
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_books_state    ON books(state)`,
-		`CREATE INDEX IF NOT EXISTS idx_books_authors  ON books(authors_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_publishers_state ON publishers(state)`,
+		`CREATE TABLE IF NOT EXISTS books (
+			id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+			title                TEXT    NOT NULL,
+			isbn                 TEXT    NOT NULL DEFAULT '',
+			pageCount            INTEGER NOT NULL DEFAULT 0,
+			genre                TEXT    NOT NULL DEFAULT '',
+			authors_id           INTEGER,
+			publishers_id        INTEGER,
+			state                TEXT    NOT NULL DEFAULT 'active',
+			createdAt            TIMESTAMP,
+			updatedAt            TIMESTAMP,
+			deletedAt            TIMESTAMP,
+			createdBy_users_id   INTEGER,
+			updatedBy_users_id   INTEGER,
+			deletedBy_users_id   INTEGER,
+			FOREIGN KEY (authors_id)    REFERENCES authors(id),
+			FOREIGN KEY (publishers_id) REFERENCES publishers(id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_books_state   ON books(state)`,
+		`CREATE INDEX IF NOT EXISTS idx_books_authors ON books(authors_id)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
 			return fmt.Errorf("sqlite migrate: %w (stmt: %s)", err, s)
 		}
+	}
+	// Add publishers_id to books for databases created before this column existed.
+	// This must run before the index on that column is created.
+	_, _ = db.Exec(`ALTER TABLE books ADD COLUMN publishers_id INTEGER REFERENCES publishers(id)`)
+	// Now safe to create the index regardless of whether the column was just added or already existed.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_books_publishers ON books(publishers_id)`); err != nil {
+		return fmt.Errorf("sqlite migrate: %w", err)
 	}
 	return nil
 }

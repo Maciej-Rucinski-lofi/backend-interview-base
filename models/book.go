@@ -19,6 +19,9 @@ type Book struct {
 	// for the same pattern on RelCreatedBy / RelUpdatedBy / RelDeletedBy.
 	RelAuthor *Relationship `json:"author,omitempty" db:"authors_id"`
 
+	// RelPublisher optionally links a book to its publisher.
+	RelPublisher *Relationship `json:"publisher,omitempty" db:"publishers_id"`
+
 	Meta
 }
 
@@ -29,13 +32,15 @@ func (Book) IDField() string   { return "id" }
 // joins work correctly when the repository adds them.
 func (Book) FilterFieldMap() map[string]string {
 	return map[string]string{
-		"id":        "books.id",
-		"title":     "books.title",
-		"isbn":      "books.isbn",
-		"genre":     "books.genre",
-		"pageCount": "books.pageCount",
-		"author.id": "books.authors_id",
-		"state":     "books.state",
+		"id":           "books.id",
+		"title":        "books.title",
+		"isbn":         "books.isbn",
+		"genre":        "books.genre",
+		"pageCount":    "books.pageCount",
+		"author.id":    "books.authors_id",
+		"author.name":  "authors.name",
+		"publisher.id": "books.publishers_id",
+		"state":        "books.state",
 	}
 }
 
@@ -61,4 +66,9 @@ type BooksBody struct {
 	Books      []*Book    `json:"books"`
 	Included   Included   `json:"included"`
 	Pagination Pagination `json:"pagination"`
+}
+
+// BulkDeleteBooksBody is the request body for DELETE /v1/books.
+type BulkDeleteBooksBody struct {
+	Filter FilterQuery `json:"filter"`
 }

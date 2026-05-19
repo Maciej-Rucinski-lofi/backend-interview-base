@@ -21,6 +21,7 @@ import (
 func Register(g *echo.Group, svc iservices.ServiceLocator) {
 	NewAuthorController(svc).Routes(g)
 	NewBookController(svc).Routes(g)
+	NewPublisherController(svc).Routes(g)
 }
 
 // ErrorHandler is the central translator from service errors to HTTP
